@@ -1,4 +1,4 @@
-# gerador.py - VERSÃO CORRIGIDA PARA NEGRITO
+# gerador.py - VERSÃO COM NEGRITO SELETIVO
 from docx import Document
 from docx.shared import Pt
 import os
@@ -9,26 +9,7 @@ from config import SOCIEDADE, OUTORGADOS, MESES_PT, PALAVRAS_NEGRITO
 
 class GeradorContratos:
     def __init__(self):
-        pass  # Removemos a dependência do FormatadorDados por enquanto
-
-    def limpar_markdown(self, texto):
-        """Remove formatação markdown (**) do texto"""
-        # Remover ** do início e fim
-        texto = texto.replace('**', '')
-        # Remover > do início de linhas (formatação de citação)
-        texto = re.sub(r'^>\s*', '', texto, flags=re.MULTILINE)
-        return texto.strip()
-
-    def extrair_titulo_negrito(self, texto):
-        """Extrai o título que deve ficar em negrito (se houver **)"""
-        # Verificar se há ** no texto
-        if '**' in texto:
-            # Encontrar texto entre **
-            padrao = r'\*\*(.*?)\*\*'
-            matches = re.findall(padrao, texto)
-            if matches:
-                return matches[0]  # Retorna o texto que estava entre **
-        return None
+        pass
 
     def preparar_placeholders(self, dados_pessoa):
         """Prepara placeholders simples"""
@@ -63,89 +44,86 @@ class GeradorContratos:
             "{{SEDE}}": SOCIEDADE['sede_cidade'],
         }
 
-    def deve_ficar_negrito(self, texto, nome_completo, titulo_negrito=None):
-        """Verifica se o texto deve ficar em negrito"""
-        texto_limpo = self.limpar_markdown(texto)
+    def aplicar_negrito_seletivo(self, texto, nome_completo):
+        """
+        Aplica negrito APENAS nas palavras específicas, mantendo o resto normal.
 
-        # 1. Verificar se é um título que estava entre **
-        if titulo_negrito and titulo_negrito in texto_limpo:
-            return True
+        Args:
+            texto: Texto completo do parágrafo (com placeholders já substituídos)
+            nome_completo: Nome completo da pessoa
 
-        # 2. Verificar nome completo
-        if nome_completo and nome_completo in texto_limpo:
-            # Verificar se é exatamente o nome ou contém como palavra completa
-            if texto_limpo == nome_completo or re.search(rf'\b{nome_completo}\b', texto_limpo):
-                return True
+        Returns:
+            Lista de tuplas [(texto1, negrito1), (texto2, negrito2), ...]
+        """
+        if not texto.strip():
+            return [(texto, False)]
 
-        # 3. Verificar palavras da lista (comparar com texto limpo)
+        # Lista de todas as palavras que devem ficar em negrito
+        palavras_para_negrito = []
+
+        # 1. Adicionar nome completo (se existir e estiver no texto)
+        if nome_completo and nome_completo in texto:
+            palavras_para_negrito.append(nome_completo)
+
+        # 2. Adicionar palavras da lista PALAVRAS_NEGRITO que estão no texto
         for palavra in PALAVRAS_NEGRITO:
-            # Limpar a palavra também
-            palavra_limpa = self.limpar_markdown(palavra)
-            if palavra_limpa and palavra_limpa in texto_limpo:
-                # Verificar se é uma palavra completa
-                if re.search(rf'\b{re.escape(palavra_limpa)}\b', texto_limpo):
-                    return True
+            if palavra in texto:
+                palavras_para_negrito.append(palavra)
 
-        return False
+        # Se não há palavras para negrito, retorna tudo normal
+        if not palavras_para_negrito:
+            return [(texto, False)]
 
-    def processar_paragrafo_complexo(self, paragraph, placeholders, nome_completo):
-        """Processa parágrafos complexos com múltiplas partes"""
+        # Criar padrão regex para encontrar todas as palavras
+        # Ordenar por tamanho (maior primeiro) para evitar substituições parciais
+        palavras_para_negrito.sort(key=len, reverse=True)
+        padrao = '|'.join(re.escape(palavra) for palavra in palavras_para_negrito)
+
+        # Dividir o texto pelas palavras que devem ser negritadas
+        partes = re.split(f'({padrao})', texto)
+
+        # Processar as partes
+        runs = []
+        for parte in partes:
+            if parte:  # Ignorar strings vazias
+                deve_negrito = parte in palavras_para_negrito
+                runs.append((parte, deve_negrito))
+
+        # Se nenhuma parte foi encontrada (pode acontecer com regex complexa)
+        if not runs:
+            runs = [(texto, False)]
+
+        return runs
+
+    def processar_paragrafo(self, paragraph, placeholders, nome_completo):
+        """
+        Processa um parágrafo: substitui placeholders e aplica negrito seletivo.
+        """
         texto_original = paragraph.text
 
-        # Extrair título que deve ficar em negrito (se houver **)
-        titulo_negrito = self.extrair_titulo_negrito(texto_original)
+        # Pular parágrafos vazios
+        if not texto_original.strip():
+            return
 
-        # Limpar markdown
-        texto_limpo = self.limpar_markdown(texto_original)
-
-        # Substituir placeholders
+        # 1. Substituir TODOS os placeholders primeiro
+        texto_com_placeholders = texto_original
         for placeholder, valor in placeholders.items():
-            if placeholder in texto_limpo:
-                texto_limpo = texto_limpo.replace(placeholder, valor)
+            if placeholder in texto_com_placeholders:
+                texto_com_placeholders = texto_com_placeholders.replace(placeholder, valor)
 
-        # Decidir formatação
-        if self.deve_ficar_negrito(texto_original, nome_completo, titulo_negrito):
-            # Se deve ficar em negrito, aplicar em todo o parágrafo
-            paragraph.clear()
-            run = paragraph.add_run(texto_limpo)
+        # 2. Aplicar negrito seletivo
+        runs = self.aplicar_negrito_seletivo(texto_com_placeholders, nome_completo)
+
+        # 3. Aplicar ao parágrafo
+        paragraph.clear()
+        for texto_run, negrito in runs:
+            run = paragraph.add_run(texto_run)
             run.font.name = 'Arial Narrow'
             run.font.size = Pt(11)
-            run.bold = True
-        else:
-            # Se não deve ficar em negrito
-            paragraph.clear()
-            run = paragraph.add_run(texto_limpo)
-            run.font.name = 'Arial Narrow'
-            run.font.size = Pt(11)
-            run.bold = False
-
-        return texto_limpo
-
-    def processar_paragrafo_simples(self, paragraph, placeholders, nome_completo):
-        """Processa parágrafos simples (sem **)"""
-        texto_original = paragraph.text
-
-        # Substituir placeholders
-        texto_processado = texto_original
-        for placeholder, valor in placeholders.items():
-            if placeholder in texto_processado:
-                texto_processado = texto_processado.replace(placeholder, valor)
-
-        # Verificar se deve ficar em negrito
-        deve_negrito = self.deve_ficar_negrito(texto_processado, nome_completo)
-
-        # Atualizar parágrafo
-        if texto_processado != texto_original or deve_negrito != paragraph.runs[0].bold:
-            paragraph.clear()
-            run = paragraph.add_run(texto_processado)
-            run.font.name = 'Arial Narrow'
-            run.font.size = Pt(11)
-            run.bold = deve_negrito
-
-        return texto_processado
+            run.bold = negrito
 
     def gerar_contrato(self, template_path, dados_pessoa):
-        """Gera contrato com tratamento especial para markdown"""
+        """Gera contrato com negrito seletivo"""
         try:
             placeholders = self.preparar_placeholders(dados_pessoa)
             nome_completo = dados_pessoa.get('nome_completo', '')
@@ -158,32 +136,16 @@ class GeradorContratos:
             # Carregar documento
             doc = Document(template_path)
 
-            # PRIMEIRO: Identificar se é um documento com markdown (**)
-            tem_markdown = False
-            for paragraph in doc.paragraphs[:3]:  # Verificar primeiros parágrafos
-                if '**' in paragraph.text:
-                    tem_markdown = True
-                    break
-
-            # SEGUNDO: Processar parágrafos conforme o tipo
+            # Processar todos os parágrafos
             for paragraph in doc.paragraphs:
-                if not paragraph.text.strip():
-                    continue  # Pular parágrafos vazios
+                self.processar_paragrafo(paragraph, placeholders, nome_completo)
 
-                if tem_markdown and ('**' in paragraph.text or paragraph.text.startswith('>')):
-                    # Processar como parágrafo complexo (com markdown)
-                    self.processar_paragrafo_complexo(paragraph, placeholders, nome_completo)
-                else:
-                    # Processar como parágrafo simples
-                    self.processar_paragrafo_simples(paragraph, placeholders, nome_completo)
-
-            # TERCEIRO: Processar tabelas
+            # Processar tabelas
             for table in doc.tables:
                 for row in table.rows:
                     for cell in row.cells:
                         for paragraph in cell.paragraphs:
-                            if paragraph.text.strip():
-                                self.processar_paragrafo_simples(paragraph, placeholders, nome_completo)
+                            self.processar_paragrafo(paragraph, placeholders, nome_completo)
 
             # Nome do arquivo
             nome_base = os.path.splitext(os.path.basename(template_path))[0]
